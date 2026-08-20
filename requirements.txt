@@ -1,0 +1,11 @@
+streamlit
+python-dotenv
+requests
+beautifulsoup4
+ddgs
+pypdf
+chromadb
+sentence-transformers
+google-genai
+langgraph
+langchain-text-splitters

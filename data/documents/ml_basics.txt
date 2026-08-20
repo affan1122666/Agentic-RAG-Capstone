@@ -1,0 +1,11 @@
+Machine Learning Basics
+
+Machine learning is a branch of artificial intelligence that allows computers to learn patterns from data and make predictions or decisions without being explicitly programmed for every task.
+
+Supervised learning uses labeled data to train a model. Common supervised learning tasks include classification and regression.
+
+Unsupervised learning uses unlabeled data to discover hidden patterns or structures. Clustering is a common example of unsupervised learning.
+
+Reinforcement learning is a type of machine learning in which an agent learns by interacting with an environment and receiving rewards or penalties.
+
+Machine learning applications include spam detection, recommendation systems, fraud detection, image recognition, and predictive maintenance.

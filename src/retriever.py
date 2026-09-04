@@ -1,4 +1,6 @@
 import re
+import time
+from functools import lru_cache
 
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -7,11 +9,37 @@ from sentence_transformers import SentenceTransformer
 CHROMA_PATH = "data/chroma_db"
 COLLECTION_NAME = "documents"
 
-# Semantic distance threshold.
-# We keep this relatively relaxed because keyword matching
-# will provide an additional relevance check.
 MAX_DISTANCE = 1.20
 
+
+# ============================================================
+# CACHED EMBEDDING MODEL
+# ============================================================
+
+@lru_cache(maxsize=1)
+def get_embedding_model():
+
+    start = time.perf_counter()
+
+    print("\nLoading embedding model...")
+
+    model = SentenceTransformer(
+        "all-MiniLM-L6-v2"
+    )
+
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"Embedding model loaded in "
+        f"{elapsed:.3f} seconds"
+    )
+
+    return model
+
+
+# ============================================================
+# RETRIEVER
+# ============================================================
 
 class Retriever:
 
@@ -20,16 +48,28 @@ class Retriever:
         self.top_k = top_k
 
         # ----------------------------------------------------
-        # Load embedding model
+        # Load cached embedding model
         # ----------------------------------------------------
 
-        self.model = SentenceTransformer(
-            "all-MiniLM-L6-v2"
+        model_start = time.perf_counter()
+
+        self.model = get_embedding_model()
+
+        model_time = (
+            time.perf_counter()
+            - model_start
+        )
+
+        print(
+            f"Retriever model initialization: "
+            f"{model_time:.3f} seconds"
         )
 
         # ----------------------------------------------------
-        # Connect to existing ChromaDB
+        # Connect to ChromaDB
         # ----------------------------------------------------
+
+        chroma_start = time.perf_counter()
 
         self.client = chromadb.PersistentClient(
             path=CHROMA_PATH
@@ -37,6 +77,16 @@ class Retriever:
 
         self.collection = self.client.get_collection(
             name=COLLECTION_NAME
+        )
+
+        chroma_time = (
+            time.perf_counter()
+            - chroma_start
+        )
+
+        print(
+            f"ChromaDB initialization: "
+            f"{chroma_time:.3f} seconds"
         )
 
     # ========================================================
@@ -51,7 +101,6 @@ class Retriever:
 
         text = text.lower()
 
-        # Remove punctuation
         text = re.sub(
             r"[^a-z0-9\s]",
             " ",
@@ -60,7 +109,6 @@ class Retriever:
 
         words = text.split()
 
-        # Remove common stop words
         stop_words = {
             "what",
             "is",
@@ -128,35 +176,45 @@ class Retriever:
     # RETRIEVE
     # ========================================================
 
-    def retrieve(
-        self,
-        query
-    ):
+    def retrieve(self, query):
+
+        total_start = time.perf_counter()
 
         # ----------------------------------------------------
         # Empty query
         # ----------------------------------------------------
 
         if not query or not query.strip():
-
             return []
 
         query = query.strip()
 
         # ----------------------------------------------------
-        # Convert query into embedding
+        # Generate query embedding
         # ----------------------------------------------------
+
+        embedding_start = time.perf_counter()
 
         query_embedding = self.model.encode(
-            [query]
+            [query],
+            show_progress_bar=False
         ).tolist()
 
+        embedding_time = (
+            time.perf_counter()
+            - embedding_start
+        )
+
+        print(
+            f"\nQuery embedding: "
+            f"{embedding_time:.3f} seconds"
+        )
+
         # ----------------------------------------------------
-        # Search more candidates than top_k
-        #
-        # This gives keyword matching more candidates to
-        # evaluate.
+        # ChromaDB search
         # ----------------------------------------------------
+
+        chroma_start = time.perf_counter()
 
         search_k = max(
             self.top_k,
@@ -164,11 +222,8 @@ class Retriever:
         )
 
         results = self.collection.query(
-
             query_embeddings=query_embedding,
-
             n_results=search_k,
-
             include=[
                 "documents",
                 "metadatas",
@@ -176,12 +231,21 @@ class Retriever:
             ]
         )
 
+        chroma_time = (
+            time.perf_counter()
+            - chroma_start
+        )
+
+        print(
+            f"ChromaDB query: "
+            f"{chroma_time:.3f} seconds"
+        )
+
         # ----------------------------------------------------
         # Safety checks
         # ----------------------------------------------------
 
         if not results:
-
             return []
 
         documents = results.get(
@@ -203,7 +267,6 @@ class Retriever:
             not documents
             or not documents[0]
         ):
-
             return []
 
         candidates = []
@@ -211,6 +274,8 @@ class Retriever:
         # ====================================================
         # BUILD CANDIDATES
         # ====================================================
+
+        scoring_start = time.perf_counter()
 
         for i, document in enumerate(
             documents[0]
@@ -249,16 +314,6 @@ class Retriever:
                 )
             )
 
-            # ------------------------------------------------
-            # Combined relevance
-            # ------------------------------------------------
-            #
-            # Lower semantic distance is better.
-            # Higher keyword score is better.
-            #
-            # We convert distance into a rough semantic score.
-            # ------------------------------------------------
-
             if distance is not None:
 
                 semantic_score = max(
@@ -294,8 +349,18 @@ class Retriever:
 
             })
 
+        scoring_time = (
+            time.perf_counter()
+            - scoring_start
+        )
+
+        print(
+            f"Relevance scoring: "
+            f"{scoring_time:.3f} seconds"
+        )
+
         # ====================================================
-        # FILTER RELEVANT RESULTS
+        # FILTER
         # ====================================================
 
         relevant = []
@@ -310,34 +375,14 @@ class Retriever:
                 "keyword_score"
             ]
 
-            # ------------------------------------------------
-            # Rule 1:
-            # Strong keyword match is enough.
-            #
-            # Example:
-            # "common tasks in supervised learning"
-            #
-            # overlaps with:
-            # supervised, learning, common, tasks
-            # ------------------------------------------------
-
             strong_keyword_match = (
                 keyword_score >= 0.30
             )
-
-            # ------------------------------------------------
-            # Rule 2:
-            # Good semantic match can also qualify.
-            # ------------------------------------------------
 
             semantic_match = (
                 distance is not None
                 and distance <= MAX_DISTANCE
             )
-
-            # ------------------------------------------------
-            # Accept if either retrieval signal is strong.
-            # ------------------------------------------------
 
             if (
                 strong_keyword_match
@@ -368,7 +413,6 @@ class Retriever:
             :self.top_k
         ]:
 
-            # Keep the original expected fields.
             final_results.append({
 
                 "content":
@@ -382,6 +426,16 @@ class Retriever:
 
             })
 
+        total_time = (
+            time.perf_counter()
+            - total_start
+        )
+
+        print(
+            f"Total retrieve() time: "
+            f"{total_time:.3f} seconds"
+        )
+
         return final_results
 
 
@@ -392,16 +446,12 @@ class Retriever:
 if __name__ == "__main__":
 
     print("\n" + "=" * 60)
-    print("HYBRID RETRIEVER TEST")
+    print("HYBRID RETRIEVER PERFORMANCE TEST")
     print("=" * 60)
 
     retriever = Retriever(
         top_k=2
     )
-
-    # ========================================================
-    # TEST 1
-    # ========================================================
 
     query = (
         "What is supervised learning?"
@@ -412,14 +462,11 @@ if __name__ == "__main__":
     )
 
     print("\n" + "-" * 60)
-    print("TEST 1: DIRECT QUERY")
+    print("RESULT")
     print("-" * 60)
 
-    print("\nQuery:")
-    print(query)
-
     print(
-        f"\nRelevant chunks returned: "
+        f"Relevant chunks: "
         f"{len(results)}"
     )
 
@@ -471,132 +518,6 @@ if __name__ == "__main__":
             )
         )
 
-    # ========================================================
-    # TEST 2
-    # ========================================================
-
-    query = (
-        "What are the common tasks "
-        "in supervised learning?"
-    )
-
-    results = retriever.retrieve(
-        query
-    )
-
-    print("\n" + "-" * 60)
-    print("TEST 2: SEMANTIC + KEYWORD QUERY")
-    print("-" * 60)
-
-    print("\nQuery:")
-    print(query)
-
-    print(
-        f"\nRelevant chunks returned: "
-        f"{len(results)}"
-    )
-
-    for i, result in enumerate(
-        results,
-        start=1
-    ):
-
-        metadata = result.get(
-            "metadata",
-            {}
-        )
-
-        print(
-            f"\n--- Result {i} ---"
-        )
-
-        print(
-            "File:",
-            metadata.get(
-                "filename",
-                "Unknown"
-            )
-        )
-
-        print(
-            "Distance:",
-            result.get(
-                "distance"
-            )
-        )
-
-        print(
-            "Content:"
-        )
-
-        print(
-            result.get(
-                "content",
-                ""
-            )
-        )
-
-    # ========================================================
-    # TEST 3
-    # ========================================================
-
-    query = (
-        "What is the history of "
-        "quantum computing in medieval Europe?"
-    )
-
-    results = retriever.retrieve(
-        query
-    )
-
-    print("\n" + "-" * 60)
-    print("TEST 3: UNRELATED QUERY")
-    print("-" * 60)
-
-    print("\nQuery:")
-    print(query)
-
-    print(
-        f"\nRelevant chunks returned: "
-        f"{len(results)}"
-    )
-
-    if not results:
-
-        print(
-            "\nNO RELEVANT LOCAL "
-            "INFORMATION FOUND."
-        )
-
-    # ========================================================
-    # TEST 4
-    # ========================================================
-
-    query = ""
-
-    results = retriever.retrieve(
-        query
-    )
-
-    print("\n" + "-" * 60)
-    print("TEST 4: EMPTY QUERY")
-    print("-" * 60)
-
-    print(
-        f"\nReturned chunks: "
-        f"{len(results)}"
-    )
-
-    if not results:
-
-        print(
-            "EMPTY QUERY HANDLED CORRECTLY."
-        )
-
-    # ========================================================
-    # COMPLETE
-    # ========================================================
-
     print("\n" + "=" * 60)
-    print("HYBRID RETRIEVER TEST COMPLETED")
+    print("PERFORMANCE TEST COMPLETED")
     print("=" * 60)

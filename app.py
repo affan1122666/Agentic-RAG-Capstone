@@ -1,6 +1,7 @@
 import streamlit as st
 
 from src.agent_graph import run_agent
+from src.retrieval_agent import get_retriever
 
 
 # ============================================================
@@ -13,6 +14,32 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+# ============================================================
+# CACHE / WARM-UP
+# ============================================================
+
+@st.cache_resource(
+    show_spinner="🤖 Loading AI retrieval model..."
+)
+def warm_up_retriever():
+    """
+    Load the local Retriever once when the Streamlit
+    application starts.
+
+    This prevents the first user question from waiting
+    for SentenceTransformer model initialization.
+    """
+
+    return get_retriever()
+
+
+# ============================================================
+# INITIALIZE RETRIEVER
+# ============================================================
+
+warm_up_retriever()
 
 
 # ============================================================
@@ -83,11 +110,15 @@ with st.sidebar:
 
     st.header("⚙️ System")
 
-    st.success("🟢 Agentic RAG System Online")
+    st.success(
+        "🟢 Agentic RAG System Online"
+    )
 
     st.divider()
 
-    st.subheader("🔄 Agent Pipeline")
+    st.subheader(
+        "🔄 Agent Pipeline"
+    )
 
     st.markdown(
         """
@@ -115,9 +146,9 @@ with st.sidebar:
 
         Corrects unsupported information.
 
-        **7. ✅ Finalizer**
+        **7. ✅ Final Answer**
 
-        Produces the verified answer.
+        Returns the critic-verified answer.
         """
     )
 
@@ -133,7 +164,9 @@ with st.sidebar:
 # QUESTION INPUT
 # ============================================================
 
-st.subheader("🔎 Ask a Research Question")
+st.subheader(
+    "🔎 Ask a Research Question"
+)
 
 question = st.text_area(
     "Enter your question:",
@@ -201,7 +234,6 @@ if "result" in st.session_state:
 
     st.divider()
 
-
     # ========================================================
     # SYSTEM METRICS
     # ========================================================
@@ -221,8 +253,12 @@ if "result" in st.session_state:
         0
     )
 
-    col1, col2, col3 = st.columns(3)
+    timings = result.get(
+        "timings",
+        {}
+    )
 
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
 
@@ -231,14 +267,12 @@ if "result" in st.session_state:
             source_selection
         )
 
-
     with col2:
 
         st.metric(
             "Agent Steps",
             len(trace)
         )
-
 
     with col3:
 
@@ -247,15 +281,27 @@ if "result" in st.session_state:
             revision_count
         )
 
+    with col4:
+
+        total_time = timings.get(
+            "Total Execution",
+            0
+        )
+
+        st.metric(
+            "Response Time",
+            f"{total_time:.2f}s"
+        )
 
     st.divider()
-
 
     # ========================================================
     # FINAL ANSWER
     # ========================================================
 
-    st.subheader("📝 Final Answer")
+    st.subheader(
+        "📝 Final Answer"
+    )
 
     final_answer = result.get(
         "final_answer",
@@ -264,7 +310,9 @@ if "result" in st.session_state:
 
     if final_answer:
 
-        st.markdown(final_answer)
+        st.markdown(
+            final_answer
+        )
 
     else:
 
@@ -272,12 +320,13 @@ if "result" in st.session_state:
             "No final answer was generated."
         )
 
-
     # ========================================================
     # SOURCES
     # ========================================================
 
-    st.subheader("📚 Sources")
+    st.subheader(
+        "📚 Sources"
+    )
 
     sources = result.get(
         "sources",
@@ -289,22 +338,31 @@ if "result" in st.session_state:
         []
     )
 
-
     # --------------------------------------------------------
     # LOCAL SOURCES
     # --------------------------------------------------------
 
     if sources:
 
-        st.markdown("### 📄 Local Sources")
+        st.markdown(
+            "### 📄 Local Sources"
+        )
 
         for source in sources:
 
-            if isinstance(source, str):
+            if isinstance(
+                source,
+                str
+            ):
 
                 if (
-                    source.startswith("http://")
-                    or source.startswith("https://")
+                    source.startswith(
+                        "http://"
+                    )
+                    or
+                    source.startswith(
+                        "https://"
+                    )
                 ):
 
                     st.markdown(
@@ -317,7 +375,10 @@ if "result" in st.session_state:
                         f"- 📄 `{source}`"
                     )
 
-            elif isinstance(source, dict):
+            elif isinstance(
+                source,
+                dict
+            ):
 
                 title = source.get(
                     "title",
@@ -344,22 +405,31 @@ if "result" in st.session_state:
                         f"- 📄 `{title}`"
                     )
 
-
     # --------------------------------------------------------
     # WEB SOURCES
     # --------------------------------------------------------
 
     if web_sources:
 
-        st.markdown("### 🌐 Web Sources")
+        st.markdown(
+            "### 🌐 Web Sources"
+        )
 
         for source in web_sources:
 
-            if isinstance(source, str):
+            if isinstance(
+                source,
+                str
+            ):
 
                 if (
-                    source.startswith("http://")
-                    or source.startswith("https://")
+                    source.startswith(
+                        "http://"
+                    )
+                    or
+                    source.startswith(
+                        "https://"
+                    )
                 ):
 
                     st.markdown(
@@ -372,7 +442,10 @@ if "result" in st.session_state:
                         f"- 🔗 {source}"
                     )
 
-            elif isinstance(source, dict):
+            elif isinstance(
+                source,
+                dict
+            ):
 
                 title = source.get(
                     "title",
@@ -396,13 +469,31 @@ if "result" in st.session_state:
                         f"- 🌐 {title}"
                     )
 
-
-    if not sources and not web_sources:
+    if (
+        not sources
+        and not web_sources
+    ):
 
         st.info(
             "No sources were returned."
         )
 
+    # ========================================================
+    # PERFORMANCE
+    # ========================================================
+
+    if timings:
+
+        with st.expander(
+            "⚡ Performance / Execution Timing"
+        ):
+
+            for step, duration in timings.items():
+
+                st.write(
+                    f"**{step}:** "
+                    f"{duration:.3f} seconds"
+                )
 
     # ========================================================
     # AGENT TRACE
@@ -429,7 +520,6 @@ if "result" in st.session_state:
                 "No trace available."
             )
 
-
     # ========================================================
     # CRITIC / VERIFICATION
     # ========================================================
@@ -445,8 +535,9 @@ if "result" in st.session_state:
             "🛡️ View Critic Verification"
         ):
 
-            st.markdown(critique)
-
+            st.markdown(
+                critique
+            )
 
     # ========================================================
     # FULL AGENT STATE
@@ -456,7 +547,9 @@ if "result" in st.session_state:
         "⚙️ View Full Agent State"
     ):
 
-        st.json(result)
+        st.json(
+            result
+        )
 
 
 # ============================================================
@@ -467,5 +560,5 @@ st.divider()
 
 st.caption(
     "Agentic RAG Capstone Project • "
-    "Planner → Router → Retrieval → Draft → Critic → Revision → Finalizer"
+    "Planner → Router → Retrieval → Draft → Critic → Revision → Final Answer"
 )

@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from src.agent_state import AgentState
 from src.retriever import Retriever
 
@@ -12,13 +14,47 @@ NO_LOCAL_INFORMATION = (
 
 
 # ============================================================
+# CACHED RETRIEVER
+# ============================================================
+
+@lru_cache(maxsize=1)
+def get_retriever():
+    """
+    Create the Retriever only once per Python process.
+
+    The Retriever contains:
+    - SentenceTransformer model
+    - ChromaDB client
+    - ChromaDB collection
+
+    All subsequent queries reuse the same Retriever.
+    """
+
+    print(
+        "\nInitializing local retriever..."
+    )
+
+    retriever = Retriever(
+        top_k=2
+    )
+
+    print(
+        "Local retriever initialized successfully."
+    )
+
+    return retriever
+
+
+# ============================================================
 # QUESTION HELPERS
 # ============================================================
 
-def _is_document_reference(question: str) -> bool:
+def _is_document_reference(
+    question: str
+) -> bool:
     """
-    Detect questions that explicitly refer to the provided
-    document/local document.
+    Detect questions that explicitly refer
+    to the provided/local document.
     """
 
     q = question.lower()
@@ -40,7 +76,9 @@ def _is_document_reference(question: str) -> bool:
     )
 
 
-def _is_comparison_question(question: str) -> bool:
+def _is_comparison_question(
+    question: str
+) -> bool:
     """
     Detect comparison-style questions.
     """
@@ -69,13 +107,14 @@ def _is_comparison_question(question: str) -> bool:
 # BUILD RETRIEVAL QUERY
 # ============================================================
 
-def _build_local_query(question: str) -> str:
+def _build_local_query(
+    question: str
+) -> str:
     """
-    Build a better local retrieval query.
+    Build an improved local retrieval query.
 
     For broad comparison questions that explicitly mention
-    the provided document, we add terms representing the
-    document content without inventing factual content.
+    the provided document, use a more focused retrieval query.
     """
 
     if (
@@ -101,12 +140,8 @@ def retrieve_information(
     """
     Retrieve relevant information from the local document store.
 
-    Handles:
-    - normal local questions
-    - unrelated questions
-    - broad comparison questions
-    - empty retrieval results
-    - safe no-context behavior
+    The Retriever itself is cached, so the expensive
+    SentenceTransformer model is NOT loaded for every query.
     """
 
     question = state.get(
@@ -141,14 +176,12 @@ def retrieve_information(
         }
 
     # ========================================================
-    # CREATE RETRIEVER
+    # GET CACHED RETRIEVER
     # ========================================================
 
     try:
 
-        retriever = Retriever(
-            top_k=2
-        )
+        retriever = get_retriever()
 
     except Exception as e:
 
@@ -164,26 +197,26 @@ def retrieve_information(
         }
 
     # ========================================================
-    # FIRST RETRIEVAL
+    # BUILD QUERY
     # ========================================================
 
     retrieval_query = _build_local_query(
         question
     )
 
-    results = retriever.retrieve(
-        retrieval_query
-    )
-
-    # ========================================================
-    # TRACE QUERY
-    # ========================================================
-
     if retrieval_query != question:
 
         trace.append(
             "RETRIEVER: Used document-aware retrieval query"
         )
+
+    # ========================================================
+    # RETRIEVE
+    # ========================================================
+
+    results = retriever.retrieve(
+        retrieval_query
+    )
 
     # ========================================================
     # PROCESS RESULTS
@@ -210,7 +243,6 @@ def retrieve_information(
         )
 
         if not content:
-
             continue
 
         # ----------------------------------------------------
@@ -283,11 +315,11 @@ def retrieve_information(
 if __name__ == "__main__":
 
     print("\n" + "=" * 60)
-    print("RETRIEVAL AGENT TEST")
+    print("RETRIEVAL AGENT PERFORMANCE TEST")
     print("=" * 60)
 
     # ========================================================
-    # TEST 1 — NORMAL LOCAL QUERY
+    # FIRST QUERY
     # ========================================================
 
     state_1: AgentState = {
@@ -303,74 +335,41 @@ if __name__ == "__main__":
     )
 
     print("\n" + "-" * 60)
-    print("TEST 1: RELEVANT QUERY")
+    print("FIRST QUERY")
     print("-" * 60)
 
-    print("\nQuestion:")
     print(
+        "\nQuestion:",
         result_1["question"]
     )
 
-    print("\nRetrieval Status:")
-
-    if result_1.get(
-        "retrieved_context"
-    ):
-
-        print("RELEVANT")
-
-    else:
-
-        print("NO_RELEVANT_INFORMATION")
-
-    print("\nRetrieved Context:")
+    print(
+        "\nResults:",
+        len(
+            result_1.get(
+                "retrieved_context",
+                ""
+            )
+        )
+    )
 
     print(
+        "\nSources:",
         result_1.get(
-            "retrieved_context",
-            NO_LOCAL_INFORMATION
+            "sources",
+            []
         )
     )
-
-    print("\nSources:")
-
-    sources_1 = result_1.get(
-        "sources",
-        []
-    )
-
-    if sources_1:
-
-        for source in sources_1:
-
-            print(
-                f"- {source}"
-            )
-
-    else:
-
-        print(
-            "No sources."
-        )
-
-    print("\nTrace:")
-
-    for item in result_1.get(
-        "trace",
-        []
-    ):
-
-        print(item)
 
     # ========================================================
-    # TEST 2 — UNRELATED QUERY
+    # SECOND QUERY
     # ========================================================
 
     state_2: AgentState = {
 
         "question":
-            "What is the history of quantum computing "
-            "in medieval Europe?",
+            "What are the common tasks "
+            "in supervised learning?",
 
         "trace": []
     }
@@ -380,150 +379,26 @@ if __name__ == "__main__":
     )
 
     print("\n" + "-" * 60)
-    print("TEST 2: UNRELATED QUERY")
+    print("SECOND QUERY")
     print("-" * 60)
 
-    print("\nQuestion:")
     print(
+        "\nQuestion:",
         result_2["question"]
     )
 
-    print("\nRetrieval Status:")
-
-    if result_2.get(
-        "retrieved_context"
-    ):
-
-        print("RELEVANT")
-
-    else:
-
-        print(
-            "NO_RELEVANT_INFORMATION"
-        )
-
-    print("\nRetrieved Context:")
-
     print(
+        "\nSources:",
         result_2.get(
-            "retrieved_context",
-            NO_LOCAL_INFORMATION
+            "sources",
+            []
         )
     )
-
-    print("\nSources:")
-
-    sources_2 = result_2.get(
-        "sources",
-        []
-    )
-
-    if sources_2:
-
-        for source in sources_2:
-
-            print(
-                f"- {source}"
-            )
-
-    else:
-
-        print(
-            "No sources."
-        )
-
-    print("\nTrace:")
-
-    for item in result_2.get(
-        "trace",
-        []
-    ):
-
-        print(item)
 
     # ========================================================
-    # TEST 3 — BOTH / DOCUMENT COMPARISON QUERY
+    # COMPLETE
     # ========================================================
-
-    state_3: AgentState = {
-
-        "question":
-            "Compare the information in the provided "
-            "document with the latest AI developments "
-            "in 2026.",
-
-        "source_selection":
-            "BOTH",
-
-        "trace": []
-    }
-
-    result_3 = retrieve_information(
-        state_3
-    )
-
-    print("\n" + "-" * 60)
-    print("TEST 3: PROVIDED DOCUMENT COMPARISON")
-    print("-" * 60)
-
-    print("\nQuestion:")
-    print(
-        result_3["question"]
-    )
-
-    print("\nRetrieval Status:")
-
-    if result_3.get(
-        "retrieved_context"
-    ):
-
-        print("RELEVANT")
-
-    else:
-
-        print(
-            "NO_RELEVANT_INFORMATION"
-        )
-
-    print("\nRetrieved Context:")
-
-    print(
-        result_3.get(
-            "retrieved_context",
-            NO_LOCAL_INFORMATION
-        )
-    )
-
-    print("\nSources:")
-
-    sources_3 = result_3.get(
-        "sources",
-        []
-    )
-
-    if sources_3:
-
-        for source in sources_3:
-
-            print(
-                f"- {source}"
-            )
-
-    else:
-
-        print(
-            "No sources."
-        )
-
-    print("\nTrace:")
-
-    for item in result_3.get(
-        "trace",
-        []
-    ):
-
-        print(item)
 
     print("\n" + "=" * 60)
-    print("RETRIEVAL AGENT TESTS COMPLETED")
+    print("RETRIEVAL AGENT TEST COMPLETED")
     print("=" * 60)

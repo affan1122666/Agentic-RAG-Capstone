@@ -1,3 +1,5 @@
+import time
+
 from langgraph.graph import StateGraph, START, END
 
 from src.agent_state import AgentState
@@ -9,12 +11,11 @@ from src.source_router import route_sources
 from src.draft_answer import generate_draft
 from src.critic import critique_answer
 from src.revision import revise_answer
-from src.finalizer import finalize_answer
 from src.logger import save_trace
 
 
 # ============================================================
-# CONSTANTS
+# CONFIGURATION
 # ============================================================
 
 MAX_REVISIONS = 2
@@ -22,15 +23,63 @@ MAX_REVISIONS = 2
 VALID_SOURCES = {
     "LOCAL",
     "WEB",
-    "BOTH",
+    "BOTH"
 }
+
+
+# ============================================================
+# TIMING HELPER
+# ============================================================
+
+def _record_timing(
+    state: AgentState,
+    step_name: str,
+    start_time: float
+) -> AgentState:
+
+    elapsed = time.perf_counter() - start_time
+
+    timings = state.get(
+        "timings",
+        {}
+    ).copy()
+
+    timings[step_name] = elapsed
+
+    return {
+        **state,
+        "timings": timings
+    }
+
+
+# ============================================================
+# PLANNER NODE
+# ============================================================
+
+def planner_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    result = create_plan(state)
+
+    return _record_timing(
+        result,
+        "Planner",
+        start_time
+    )
 
 
 # ============================================================
 # SOURCE ROUTER NODE
 # ============================================================
 
-def source_router_node(state: AgentState) -> AgentState:
+def source_router_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
 
     state = route_sources(state)
 
@@ -39,7 +88,10 @@ def source_router_node(state: AgentState) -> AgentState:
         "LOCAL"
     )
 
-    if not isinstance(source, str):
+    if not isinstance(
+        source,
+        str
+    ):
         source = "LOCAL"
 
     source = source.strip().upper()
@@ -56,35 +108,105 @@ def source_router_node(state: AgentState) -> AgentState:
         f"GRAPH ROUTER: Routing to {source} source"
     )
 
-    return {
+    state = {
         **state,
         "source_selection": source,
-        "trace": trace,
+        "trace": trace
     }
+
+    return _record_timing(
+        state,
+        "Source Router",
+        start_time
+    )
 
 
 # ============================================================
-# BOTH SOURCES
+# RETRIEVER NODE
+# ============================================================
+
+def retriever_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    result = retrieve_information(
+        state
+    )
+
+    return _record_timing(
+        result,
+        "Retriever",
+        start_time
+    )
+
+
+# ============================================================
+# WEB SEARCH NODE
+# ============================================================
+
+def web_search_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    result = search_web_agent(
+        state
+    )
+
+    return _record_timing(
+        result,
+        "Web Search",
+        start_time
+    )
+
+
+# ============================================================
+# BOTH SOURCES NODE
 # ============================================================
 
 def retrieve_both_sources(
     state: AgentState
 ) -> AgentState:
 
-    # --------------------------------------------------------
-    # Retrieve from local documents
-    # --------------------------------------------------------
-
-    state = retrieve_information(state)
+    start_time = time.perf_counter()
 
     # --------------------------------------------------------
-    # Retrieve from web
+    # LOCAL RETRIEVAL
     # --------------------------------------------------------
 
-    state = search_web_agent(state)
+    local_start = time.perf_counter()
+
+    state = retrieve_information(
+        state
+    )
+
+    state = _record_timing(
+        state,
+        "Local Retrieval",
+        local_start
+    )
 
     # --------------------------------------------------------
-    # Trace
+    # WEB SEARCH
+    # --------------------------------------------------------
+
+    web_start = time.perf_counter()
+
+    state = search_web_agent(
+        state
+    )
+
+    state = _record_timing(
+        state,
+        "Web Search",
+        web_start
+    )
+
+    # --------------------------------------------------------
+    # TRACE
     # --------------------------------------------------------
 
     trace = state.get(
@@ -96,24 +218,35 @@ def retrieve_both_sources(
         "BOTH SOURCE: Combined local and web information"
     )
 
-    return {
+    state = {
         **state,
-        "trace": trace,
+        "trace": trace
     }
+
+    return _record_timing(
+        state,
+        "Both Sources",
+        start_time
+    )
 
 
 # ============================================================
 # SOURCE DECISION
 # ============================================================
 
-def decide_source(state: AgentState):
+def decide_source(
+    state: AgentState
+):
 
     source = state.get(
         "source_selection",
         "LOCAL"
     )
 
-    if not isinstance(source, str):
+    if not isinstance(
+        source,
+        str
+    ):
         return "LOCAL"
 
     source = source.strip().upper()
@@ -131,26 +264,16 @@ def decide_source(state: AgentState):
 def information_available(
     state: AgentState
 ) -> str:
-    """
-    Check whether enough relevant information exists
-    for the selected source strategy.
-
-    LOCAL:
-        Local context must exist.
-
-    WEB:
-        Web context must exist.
-
-    BOTH:
-        BOTH local and web context must exist.
-    """
 
     source = state.get(
         "source_selection",
         "LOCAL"
     )
 
-    if not isinstance(source, str):
+    if not isinstance(
+        source,
+        str
+    ):
         source = "LOCAL"
 
     source = source.strip().upper()
@@ -183,11 +306,11 @@ def information_available(
 
     if source == "LOCAL":
 
-        if retrieved_context.strip():
-
-            return "available"
-
-        return "unavailable"
+        return (
+            "available"
+            if retrieved_context.strip()
+            else "unavailable"
+        )
 
     # --------------------------------------------------------
     # WEB
@@ -195,11 +318,11 @@ def information_available(
 
     if source == "WEB":
 
-        if web_context.strip():
-
-            return "available"
-
-        return "unavailable"
+        return (
+            "available"
+            if web_context.strip()
+            else "unavailable"
+        )
 
     # --------------------------------------------------------
     # BOTH
@@ -207,19 +330,79 @@ def information_available(
 
     if source == "BOTH":
 
-        # IMPORTANT:
-        # BOTH means BOTH sources are required.
-
-        if (
-            retrieved_context.strip()
-            and web_context.strip()
-        ):
-
-            return "available"
-
-        return "unavailable"
+        return (
+            "available"
+            if (
+                retrieved_context.strip()
+                and web_context.strip()
+            )
+            else "unavailable"
+        )
 
     return "unavailable"
+
+
+# ============================================================
+# DRAFT NODE
+# ============================================================
+
+def draft_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    result = generate_draft(
+        state
+    )
+
+    return _record_timing(
+        result,
+        "Draft",
+        start_time
+    )
+
+
+# ============================================================
+# CRITIC NODE
+# ============================================================
+
+def critic_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    result = critique_answer(
+        state
+    )
+
+    return _record_timing(
+        result,
+        "Critic",
+        start_time
+    )
+
+
+# ============================================================
+# REVISION NODE
+# ============================================================
+
+def revision_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    result = revise_answer(
+        state
+    )
+
+    return _record_timing(
+        result,
+        "Revision",
+        start_time
+    )
 
 
 # ============================================================
@@ -229,24 +412,21 @@ def information_available(
 def no_information_node(
     state: AgentState
 ) -> AgentState:
-    """
-    Safely handle cases where required source information
-    is unavailable.
-    """
+
+    start_time = time.perf_counter()
 
     source = state.get(
         "source_selection",
         "LOCAL"
     )
 
-    if not isinstance(source, str):
+    if not isinstance(
+        source,
+        str
+    ):
         source = "LOCAL"
 
     source = source.strip().upper()
-
-    # --------------------------------------------------------
-    # Message
-    # --------------------------------------------------------
 
     if source == "WEB":
 
@@ -270,10 +450,6 @@ def no_information_node(
             "relevant information to answer this question."
         )
 
-    # --------------------------------------------------------
-    # Trace
-    # --------------------------------------------------------
-
     trace = state.get(
         "trace",
         []
@@ -284,7 +460,7 @@ def no_information_node(
         "safe answer generated"
     )
 
-    return {
+    state = {
         **state,
 
         "draft_answer": message,
@@ -301,107 +477,23 @@ def no_information_node(
 
         "revision_count": 0,
 
-        "trace": trace,
+        "trace": trace
     }
+
+    return _record_timing(
+        state,
+        "No Information",
+        start_time
+    )
 
 
 # ============================================================
 # CRITIC ROUTER
 # ============================================================
 
-def revision_decision(
-    state: AgentState
-):
-
-    critique = state.get(
-        "critique",
-        ""
-    )
-
-    if not isinstance(critique, str):
-        critique = ""
-
-    critique_upper = critique.upper()
-
-    revision_count = state.get(
-        "revision_count",
-        0
-    )
-
-    if not isinstance(
-        revision_count,
-        int
-    ):
-        revision_count = 0
-
-    trace = state.get(
-        "trace",
-        []
-    ).copy()
-
-    # --------------------------------------------------------
-    # FAIL + REVISION AVAILABLE
-    # --------------------------------------------------------
-
-    if (
-        "VERDICT: FAIL" in critique_upper
-        and revision_count < MAX_REVISIONS
-    ):
-
-        trace.append(
-            "CRITIC ROUTER: Verification failed → REVISION"
-        )
-
-        return {
-            "route": "revision",
-            "state": {
-                **state,
-                "trace": trace,
-            },
-        }
-
-    # --------------------------------------------------------
-    # PASS
-    # --------------------------------------------------------
-
-    if "VERDICT: PASS" in critique_upper:
-
-        trace.append(
-            "CRITIC ROUTER: Verification passed → FINALIZER"
-        )
-
-    # --------------------------------------------------------
-    # MAXIMUM REVISIONS
-    # --------------------------------------------------------
-
-    else:
-
-        trace.append(
-            "CRITIC ROUTER: Maximum revisions reached → FINALIZER"
-        )
-
-    return {
-        "route": "finalizer",
-        "state": {
-            **state,
-            "trace": trace,
-        },
-    }
-
-
-# ============================================================
-# SIMPLE CRITIC ROUTER
-# ============================================================
-
 def route_after_critic(
     state: AgentState
 ):
-    """
-    LangGraph conditional-edge router.
-
-    This version keeps the routing state simple and
-    compatible with LangGraph conditional edges.
-    """
 
     critique = state.get(
         "critique",
@@ -433,7 +525,7 @@ def route_after_critic(
     ).copy()
 
     # --------------------------------------------------------
-    # FAIL → REVISION
+    # REVISION REQUIRED
     # --------------------------------------------------------
 
     if (
@@ -450,32 +542,76 @@ def route_after_critic(
         return "revision"
 
     # --------------------------------------------------------
-    # PASS → FINALIZER
+    # PASS
     # --------------------------------------------------------
 
     if "VERDICT: PASS" in critique_upper:
 
         trace.append(
-            "CRITIC ROUTER: Verification passed → FINALIZER"
+            "CRITIC ROUTER: Verification passed → FINAL ANSWER"
         )
 
     # --------------------------------------------------------
-    # MAX REVISIONS → FINALIZER
+    # MAX REVISIONS
     # --------------------------------------------------------
 
     else:
 
         trace.append(
-            "CRITIC ROUTER: Maximum revisions reached → FINALIZER"
+            "CRITIC ROUTER: Maximum revisions reached "
+            "→ FINAL ANSWER"
         )
 
     state["trace"] = trace
 
-    return "finalizer"
+    return "final_answer"
 
 
 # ============================================================
-# BUILD GRAPH
+# FINAL ANSWER NODE
+# ============================================================
+
+def final_answer_node(
+    state: AgentState
+) -> AgentState:
+
+    start_time = time.perf_counter()
+
+    draft = state.get(
+        "draft_answer",
+        ""
+    )
+
+    if not isinstance(
+        draft,
+        str
+    ):
+        draft = ""
+
+    trace = state.get(
+        "trace",
+        []
+    ).copy()
+
+    trace.append(
+        "FINAL ANSWER: Critic-verified draft returned directly"
+    )
+
+    state = {
+        **state,
+        "final_answer": draft,
+        "trace": trace
+    }
+
+    return _record_timing(
+        state,
+        "Final Answer",
+        start_time
+    )
+
+
+# ============================================================
+# BUILD AGENT GRAPH
 # ============================================================
 
 def build_agent_graph():
@@ -484,13 +620,13 @@ def build_agent_graph():
         AgentState
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # NODES
-    # ========================================================
+    # --------------------------------------------------------
 
     graph.add_node(
         "planner",
-        create_plan
+        planner_node
     )
 
     graph.add_node(
@@ -500,12 +636,12 @@ def build_agent_graph():
 
     graph.add_node(
         "retriever",
-        retrieve_information
+        retriever_node
     )
 
     graph.add_node(
         "web_search",
-        search_web_agent
+        web_search_node
     )
 
     graph.add_node(
@@ -515,22 +651,22 @@ def build_agent_graph():
 
     graph.add_node(
         "draft",
-        generate_draft
+        draft_node
     )
 
     graph.add_node(
         "critic",
-        critique_answer
+        critic_node
     )
 
     graph.add_node(
         "revision",
-        revise_answer
+        revision_node
     )
 
     graph.add_node(
-        "finalizer",
-        finalize_answer
+        "final_answer",
+        final_answer_node
     )
 
     graph.add_node(
@@ -538,144 +674,125 @@ def build_agent_graph():
         no_information_node
     )
 
-    # ========================================================
-    # START
-    # ========================================================
+    # --------------------------------------------------------
+    # START → PLANNER
+    # --------------------------------------------------------
 
     graph.add_edge(
         START,
         "planner"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # PLANNER → SOURCE ROUTER
-    # ========================================================
+    # --------------------------------------------------------
 
     graph.add_edge(
         "planner",
         "source_router"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # SOURCE ROUTER → SOURCE
-    # ========================================================
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
-
         "source_router",
-
         decide_source,
-
         {
             "LOCAL": "retriever",
             "WEB": "web_search",
-            "BOTH": "both_sources",
+            "BOTH": "both_sources"
         }
     )
 
-    # ========================================================
-    # LOCAL → INFORMATION CHECK
-    # ========================================================
+    # --------------------------------------------------------
+    # RETRIEVER → DRAFT / NO INFORMATION
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
-
         "retriever",
-
         information_available,
-
         {
             "available": "draft",
-            "unavailable": "no_information",
+            "unavailable": "no_information"
         }
     )
 
-    # ========================================================
-    # WEB → INFORMATION CHECK
-    # ========================================================
+    # --------------------------------------------------------
+    # WEB SEARCH → DRAFT / NO INFORMATION
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
-
         "web_search",
-
         information_available,
-
         {
             "available": "draft",
-            "unavailable": "no_information",
+            "unavailable": "no_information"
         }
     )
 
-    # ========================================================
-    # BOTH → INFORMATION CHECK
-    # ========================================================
+    # --------------------------------------------------------
+    # BOTH SOURCES → DRAFT / NO INFORMATION
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
-
         "both_sources",
-
         information_available,
-
         {
             "available": "draft",
-            "unavailable": "no_information",
+            "unavailable": "no_information"
         }
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # DRAFT → CRITIC
-    # ========================================================
+    # --------------------------------------------------------
 
     graph.add_edge(
         "draft",
         "critic"
     )
 
-    # ========================================================
-    # CRITIC → REVISION / FINALIZER
-    # ========================================================
+    # --------------------------------------------------------
+    # CRITIC → REVISION / FINAL
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
-
         "critic",
-
         route_after_critic,
-
         {
             "revision": "revision",
-            "finalizer": "finalizer",
+            "final_answer": "final_answer"
         }
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # REVISION → CRITIC
-    # ========================================================
+    # --------------------------------------------------------
 
     graph.add_edge(
         "revision",
         "critic"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # NO INFORMATION → END
-    # ========================================================
+    # --------------------------------------------------------
 
     graph.add_edge(
         "no_information",
         END
     )
 
-    # ========================================================
-    # FINALIZER → END
-    # ========================================================
+    # --------------------------------------------------------
+    # FINAL ANSWER → END
+    # --------------------------------------------------------
 
     graph.add_edge(
-        "finalizer",
+        "final_answer",
         END
     )
-
-    # ========================================================
-    # COMPILE
-    # ========================================================
 
     return graph.compile()
 
@@ -692,6 +809,7 @@ def run_agent(
         question,
         str
     ):
+
         raise TypeError(
             "Question must be a string."
         )
@@ -705,13 +823,26 @@ def run_agent(
         )
 
     # --------------------------------------------------------
-    # Build graph
+    # TOTAL TIMER
     # --------------------------------------------------------
+
+    total_start = time.perf_counter()
+
+    # --------------------------------------------------------
+    # GRAPH BUILD TIMER
+    # --------------------------------------------------------
+
+    graph_start = time.perf_counter()
 
     agent = build_agent_graph()
 
+    graph_build_time = (
+        time.perf_counter()
+        - graph_start
+    )
+
     # --------------------------------------------------------
-    # Initial state
+    # INITIAL STATE
     # --------------------------------------------------------
 
     initial_state: AgentState = {
@@ -721,10 +852,12 @@ def run_agent(
         "trace": [],
 
         "revision_count": 0,
+
+        "timings": {}
     }
 
     # --------------------------------------------------------
-    # Execute graph
+    # RUN GRAPH
     # --------------------------------------------------------
 
     result = agent.invoke(
@@ -732,7 +865,31 @@ def run_agent(
     )
 
     # --------------------------------------------------------
-    # Save complete execution trace
+    # TOTAL TIME
+    # --------------------------------------------------------
+
+    total_time = (
+        time.perf_counter()
+        - total_start
+    )
+
+    timings = result.get(
+        "timings",
+        {}
+    ).copy()
+
+    timings["Graph Build"] = (
+        graph_build_time
+    )
+
+    timings["Total Execution"] = (
+        total_time
+    )
+
+    result["timings"] = timings
+
+    # --------------------------------------------------------
+    # SAVE TRACE
     # --------------------------------------------------------
 
     try:
@@ -786,8 +943,8 @@ def print_sources(
         web_sources = []
 
     all_sources = (
-        sources +
-        web_sources
+        sources
+        + web_sources
     )
 
     clean_sources = []
@@ -827,14 +984,162 @@ def print_sources(
 
 
 # ============================================================
+# PRINT TIMINGS
+# ============================================================
+
+def print_timings(
+    result
+):
+
+    timings = result.get(
+        "timings",
+        {}
+    )
+
+    print(
+        "\n"
+        + "=" * 60
+    )
+
+    print(
+        "EXECUTION TIMING"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    if not timings:
+
+        print(
+            "No timing information available."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # DISPLAY TIMINGS
+    # --------------------------------------------------------
+
+    for step_name, elapsed in timings.items():
+
+        if not isinstance(
+            elapsed,
+            (int, float)
+        ):
+            continue
+
+        print(
+            f"{step_name:<25} "
+            f"{elapsed:.3f} seconds"
+        )
+
+    # --------------------------------------------------------
+    # FIND SLOWEST ACTUAL STAGE
+    # --------------------------------------------------------
+
+    stage_timings = {
+
+        key: value
+
+        for key, value in timings.items()
+
+        if key not in {
+            "Total Execution",
+            "Graph Build",
+            "Both Sources"
+        }
+
+        and isinstance(
+            value,
+            (int, float)
+        )
+    }
+
+    if stage_timings:
+
+        slowest_stage = max(
+            stage_timings,
+            key=stage_timings.get
+        )
+
+        slowest_time = (
+            stage_timings[
+                slowest_stage
+            ]
+        )
+
+        print(
+            "\n"
+            + "-" * 60
+        )
+
+        print(
+            "SLOWEST STAGE"
+        )
+
+        print(
+            "-" * 60
+        )
+
+        print(
+            f"{slowest_stage}: "
+            f"{slowest_time:.3f} seconds"
+        )
+
+    # --------------------------------------------------------
+    # TOTAL
+    # --------------------------------------------------------
+
+    total_time = timings.get(
+        "Total Execution"
+    )
+
+    if isinstance(
+        total_time,
+        (int, float)
+    ):
+
+        print(
+            "\n"
+            + "-" * 60
+        )
+
+        print(
+            "TOTAL RESPONSE TIME"
+        )
+
+        print(
+            "-" * 60
+        )
+
+        print(
+            f"{total_time:.3f} seconds"
+        )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
 if __name__ == "__main__":
 
-    print("\n" + "=" * 60)
-    print("AGENTIC RAG ASSISTANT")
-    print("=" * 60)
+    print(
+        "\n"
+        + "=" * 60
+    )
+
+    print(
+        "AGENTIC RAG ASSISTANT"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    # --------------------------------------------------------
+    # QUESTION
+    # --------------------------------------------------------
 
     question = input(
         "\nEnter your research question: "
@@ -847,6 +1152,10 @@ if __name__ == "__main__":
         )
 
         raise SystemExit
+
+    # --------------------------------------------------------
+    # PROCESSING
+    # --------------------------------------------------------
 
     print(
         "\nProcessing your question..."
@@ -862,13 +1171,22 @@ if __name__ == "__main__":
             question
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # FINAL ANSWER
-        # ====================================================
+        # ----------------------------------------------------
 
-        print("\n" + "=" * 60)
-        print("FINAL ANSWER")
-        print("=" * 60)
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "FINAL ANSWER"
+        )
+
+        print(
+            "=" * 60
+        )
 
         print(
             result.get(
@@ -877,25 +1195,43 @@ if __name__ == "__main__":
             )
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # SOURCES
-        # ====================================================
+        # ----------------------------------------------------
 
-        print("\n" + "=" * 60)
-        print("SOURCES")
-        print("=" * 60)
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "SOURCES"
+        )
+
+        print(
+            "=" * 60
+        )
 
         print_sources(
             result
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # REVISION COUNT
-        # ====================================================
+        # ----------------------------------------------------
 
-        print("\n" + "=" * 60)
-        print("REVISION COUNT")
-        print("=" * 60)
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "REVISION COUNT"
+        )
+
+        print(
+            "=" * 60
+        )
 
         print(
             result.get(
@@ -904,13 +1240,22 @@ if __name__ == "__main__":
             )
         )
 
-        # ====================================================
-        # CRITIC
-        # ====================================================
+        # ----------------------------------------------------
+        # CRITIC VERIFICATION
+        # ----------------------------------------------------
 
-        print("\n" + "=" * 60)
-        print("CRITIC VERIFICATION")
-        print("=" * 60)
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "CRITIC VERIFICATION"
+        )
+
+        print(
+            "=" * 60
+        )
 
         print(
             result.get(
@@ -919,13 +1264,30 @@ if __name__ == "__main__":
             )
         )
 
-        # ====================================================
-        # TRACE
-        # ====================================================
+        # ----------------------------------------------------
+        # TIMING
+        # ----------------------------------------------------
 
-        print("\n" + "=" * 60)
-        print("AGENT TRACE")
-        print("=" * 60)
+        print_timings(
+            result
+        )
+
+        # ----------------------------------------------------
+        # AGENT TRACE
+        # ----------------------------------------------------
+
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "AGENT TRACE"
+        )
+
+        print(
+            "=" * 60
+        )
 
         trace = result.get(
             "trace",
@@ -946,7 +1308,9 @@ if __name__ == "__main__":
                     f"{index}. {step}"
                 )
 
-        print("=" * 60)
+        print(
+            "=" * 60
+        )
 
         print(
             "\nExecution completed successfully."
@@ -954,12 +1318,23 @@ if __name__ == "__main__":
 
     except Exception as e:
 
-        print("\n" + "=" * 60)
-        print("AGENT ERROR")
-        print("=" * 60)
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "AGENT ERROR"
+        )
+
+        print(
+            "=" * 60
+        )
 
         print(
             f"{type(e).__name__}: {e}"
         )
 
-        print("=" * 60)
+        print(
+            "=" * 60
+        )
